@@ -345,7 +345,8 @@ void EKFLocalization::interpolateDVL(ros::Time t_now, geometry_msgs::TwistWithCo
 }
 
 void EKFLocalization::computeOdom(const geometry_msgs::TwistWithCovarianceStampedPtr &dvl_msg,
-                                  const tf::Quaternion& q_auv, boost::numeric::ublas::vector<double> &u_t){
+                                  const tf::Quaternion& q_auv, boost::numeric::ublas::vector<double> &u_t,
+                                  boost::numeric::ublas::matrix<double> &g_t){
 
     // Update time step
     double t_now = dvl_msg->header.stamp.toSec();
@@ -379,48 +380,67 @@ void EKFLocalization::computeOdom(const geometry_msgs::TwistWithCovarianceStampe
 
     // Derivative of motion model in mu_ (t-1)
     using namespace std;
-    G_t_ = boost::numeric::ublas::zero_matrix<double>(6);
+    g_t = boost::numeric::ublas::zero_matrix<double>(6);
 
-    G_t_(0,0) = 1;
-    G_t_(0,3) = disp_base.y()*(sin(roll_t)*sin(yaw_t) + cos(roll_t)*cos(yaw_t)*sin(pitch_t))
+    g_t(0,3) = disp_base.y()*(sin(roll_t)*sin(yaw_t) + cos(roll_t)*cos(yaw_t)*sin(pitch_t))
                 + disp_base.z()*(cos(roll_t)*sin(yaw_t) - cos(yaw_t)*sin(pitch_t)*sin(roll_t));
-    G_t_(0,4) = cos(yaw_t)*(disp_base.z()*cos(pitch_t)*cos(roll_t) - disp_base.x()*sin(pitch_t)
+    g_t(0,4) = cos(yaw_t)*(disp_base.z()*cos(pitch_t)*cos(roll_t) - disp_base.x()*sin(pitch_t)
                 + disp_base.y()*cos(pitch_t)*sin(roll_t));
-    G_t_(0,5) = disp_base.z()*(cos(yaw_t)*sin(roll_t) - cos(roll_t)*sin(pitch_t)*sin(yaw_t))
+    g_t(0,5) = disp_base.z()*(cos(yaw_t)*sin(roll_t) - cos(roll_t)*sin(pitch_t)*sin(yaw_t))
                 - disp_base.y()*(cos(roll_t)*cos(yaw_t) + sin(pitch_t)*sin(roll_t)*sin(yaw_t))
                 - disp_base.x()*cos(pitch_t)*sin(yaw_t);
 
-    G_t_(1,1) = 1;
-    G_t_(1,3) = - disp_base.y()*(cos(yaw_t)*sin(roll_t) - cos(roll_t)*sin(pitch_t)*sin(yaw_t))
+    g_t(1,3) = - disp_base.y()*(cos(yaw_t)*sin(roll_t) - cos(roll_t)*sin(pitch_t)*sin(yaw_t))
                 - disp_base.z()*(cos(roll_t)*cos(yaw_t) + sin(pitch_t)*sin(roll_t)*sin(yaw_t));
-    G_t_(1,4) = sin(yaw_t)*(disp_base.z()*cos(pitch_t)*cos(roll_t) - disp_base.x()*sin(pitch_t)
+    g_t(1,4) = sin(yaw_t)*(disp_base.z()*cos(pitch_t)*cos(roll_t) - disp_base.x()*sin(pitch_t)
                 + disp_base.y()*cos(pitch_t)*sin(roll_t));
-    G_t_(1,5) = disp_base.z()*(sin(roll_t)*sin(yaw_t) + cos(roll_t)*cos(yaw_t)*sin(pitch_t))
+    g_t(1,5) = disp_base.z()*(sin(roll_t)*sin(yaw_t) + cos(roll_t)*cos(yaw_t)*sin(pitch_t))
                - disp_base.y()*(cos(roll_t)*sin(yaw_t) - cos(yaw_t)*sin(pitch_t)*sin(roll_t))
                + disp_base.x()*cos(pitch_t)*cos(yaw_t);
 
-    G_t_(2,2) = 1;
-    G_t_(2,3) = cos(pitch_t)*(disp_base.y()*cos(roll_t) - disp_base.z()*sin(roll_t));
-    G_t_(2,4) = - disp_base.x()*cos(pitch_t) - disp_base.z()*cos(roll_t)*sin(pitch_t)
+    g_t(2,3) = cos(pitch_t)*(disp_base.y()*cos(roll_t) - disp_base.z()*sin(roll_t));
+    g_t(2,4) = - disp_base.x()*cos(pitch_t) - disp_base.z()*cos(roll_t)*sin(pitch_t)
                 - disp_base.y()*sin(pitch_t)*sin(roll_t);
-    G_t_(2,5) = 0;
+    g_t(2,5) = 0;
 
     t_prev_ = t_now;
 }
 
-void EKFLocalization::predictMotion(boost::numeric::ublas::vector<double> &u_t){
+void EKFLocalization::predictMotion(boost::numeric::ublas::vector<double> &u_t,
+                                    boost::numeric::ublas::matrix<double> &g_t){
+
+    using namespace boost::numeric::ublas;
+    // Construct Fx (6,3N) for dimension mapping
+    matrix<double> F_x = zero_matrix<double>(6, 6 + 3*lm_num_);
+    subrange(F_x, 0,6,0,6) = identity_matrix<double>(6);
+    matrix<double> F_x_trans = trans(F_x);
+
 
     // Compute predicted mu
-    mu_hat_ = mu_ + u_t;
+    mu_hat_ = mu_ + prod(F_x_trans, u_t);
     mu_hat_(3) = angleLimit(mu_hat_(3));
     mu_hat_(4) = angleLimit(mu_hat_(4));
     mu_hat_(5) = angleLimit(mu_hat_(5));
     mu_pred_ += u_t;
 
+    // Compute Jacobian G_t
+    matrix<double> G_t;
+    matrix<double> I_t = identity_matrix<double>(6, 6 + 3*lm_num_);
+    I_t(3,3) = 0;   // G_t is zero here because the motion model uses abs values for RPY
+    I_t(4,4) = 0;
+    I_t(5,5) = 0;
+
+    matrix<double> aux = prod(g_t, F_x);
+    noalias(G_t) = prod(F_x_trans, aux);
+    noalias(G_t) += I_t;
+
     // Predicted covariance matrix
-    boost::numeric::ublas::matrix<double> aux = boost::numeric::ublas::prod(G_t_, Sigma_);
-    Sigma_hat_ = boost::numeric::ublas::prod(aux, boost::numeric::ublas::trans(G_t_));
-    Sigma_hat_ += R_;
+    matrix<double> aux_2;
+    noalias(aux_2) = prod(G_t, Sigma_);
+    noalias(Sigma_hat_) = prod(aux_2, trans(G_t));
+    matrix<double> aux_3;
+    noalias(aux_3) = prod(R_, F_x);
+    noalias(Sigma_hat_) += prod(F_x_trans, aux_3);
 }
 
 void EKFLocalization::predictMeasurement(const boost::numeric::ublas::vector<double> &landmark_j,
@@ -538,6 +558,7 @@ void EKFLocalization::ekfLocalize(const ros::TimerEvent& e){
 
     tf::Quaternion q_auv;
     boost::numeric::ublas::vector<double> u_t = boost::numeric::ublas::vector<double>(6);
+    boost::numeric::ublas::matrix<double> g_t;
 
     if(dvl_readings_.size() >= size_dvl_q_ && imu_readings_.size() >= size_imu_q_ && !gt_readings_.empty()){
         // Init filter with initial, true pose (from GPS?)
@@ -581,10 +602,10 @@ void EKFLocalization::ekfLocalize(const ros::TimerEvent& e){
             q_auv.normalize();
 
             // Compute displacement based on DVL and IMU orientation
-            computeOdom(dvl_msg, q_auv, u_t);
+            computeOdom(dvl_msg, q_auv, u_t, g_t);
 
             // Prediction step
-            predictMotion(u_t);
+            predictMotion(u_t, g_t);
 
             // Data association and sequential update
             dataAssociation();

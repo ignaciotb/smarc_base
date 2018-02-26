@@ -106,9 +106,11 @@ private:
     boost::numeric::ublas::vector<double> mu_pred_;
     boost::numeric::ublas::matrix<double> Sigma_;
     boost::numeric::ublas::matrix<double> Sigma_hat_;
-    boost::numeric::ublas::matrix<double> G_t_;
     double delta_m_;
     double lambda_M_;
+
+    // Mapping variables
+    int lm_num_;
 
     // Noise models
     boost::numeric::ublas::matrix<double> R_;
@@ -155,7 +157,7 @@ private:
      * Integrates IMU and DVL to predict an estimate of the pose
      */
     void computeOdom(const geometry_msgs::TwistWithCovarianceStampedPtr &dvl_msg, const tf::Quaternion &q_auv,
-                     boost::numeric::ublas::vector<double> &u_t);
+                     boost::numeric::ublas::vector<double> &u_t, boost::numeric::ublas::matrix<double> &g_t);
 
 
     /**
@@ -163,7 +165,7 @@ private:
      * @param u_t
      * Prediction step for the EKF
      */
-    void predictMotion(boost::numeric::ublas::vector<double> &u_t);
+    void predictMotion(boost::numeric::ublas::vector<double> &u_t, boost::numeric::ublas::matrix<double> &g_t);
 
     /**
      * @brief predictMeasurement
