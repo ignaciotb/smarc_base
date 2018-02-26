@@ -157,42 +157,42 @@ void EKFLocalization::init(std::vector<double> sigma_diag, std::vector<double> r
         ROS_INFO_NAMED(node_name_,"Waiting for the gazebo model states service to come up");
     }
 
-    // Build map for localization from Gazebo services and transform to odom frame coordinates
-    gazebo_msgs::GetWorldProperties world_prop_srv;
-    gazebo_msgs::GetModelState landmark_state_srv;
-    tf::Vector3 lm_world;
-    tf::Vector3 lm_odom;
-    std::vector<boost::numeric::ublas::vector<double>> map_world;
-    if(gazebo_client_.call(world_prop_srv)){
-        int id = 0;
-        boost::numeric::ublas::vector<double> aux_vec(4);
-        for(auto landmark_name: world_prop_srv.response.model_names){
-            if(landmark_name != "lolo_auv" && landmark_name != "ned" && landmark_name != "ocean"){
-                landmark_state_srv.request.model_name = landmark_name;
-                if(landmarks_client_.call(landmark_state_srv)){
-                    aux_vec(0) = id;
+//    // Build map for localization from Gazebo services and transform to odom frame coordinates
+//    gazebo_msgs::GetWorldProperties world_prop_srv;
+//    gazebo_msgs::GetModelState landmark_state_srv;
+//    tf::Vector3 lm_world;
+//    tf::Vector3 lm_odom;
+//    std::vector<boost::numeric::ublas::vector<double>> map_world;
+//    if(gazebo_client_.call(world_prop_srv)){
+//        int id = 0;
+//        boost::numeric::ublas::vector<double> aux_vec(4);
+//        for(auto landmark_name: world_prop_srv.response.model_names){
+//            if(landmark_name != "lolo_auv" && landmark_name != "ned" && landmark_name != "ocean"){
+//                landmark_state_srv.request.model_name = landmark_name;
+//                if(landmarks_client_.call(landmark_state_srv)){
+//                    aux_vec(0) = id;
 
-                    // Store map in world frame
-                    aux_vec(1) = landmark_state_srv.response.pose.position.x;
-                    aux_vec(2) = landmark_state_srv.response.pose.position.y;
-                    aux_vec(3) = landmark_state_srv.response.pose.position.z;
-                    map_world.push_back(aux_vec);
+//                    // Store map in world frame
+//                    aux_vec(1) = landmark_state_srv.response.pose.position.x;
+//                    aux_vec(2) = landmark_state_srv.response.pose.position.y;
+//                    aux_vec(3) = landmark_state_srv.response.pose.position.z;
+//                    map_world.push_back(aux_vec);
 
-                    // Map in odom frame
-                    lm_world = tf::Vector3(landmark_state_srv.response.pose.position.x,
-                                           landmark_state_srv.response.pose.position.y,
-                                           landmark_state_srv.response.pose.position.z);
-                    lm_odom = transf_odom_world_ * lm_world;
-                    aux_vec(1) = lm_odom.x();
-                    aux_vec(2) = lm_odom.y();
-                    aux_vec(3) = lm_odom.z();
-                    map_odom_.push_back(aux_vec);
-                    id++;
-                }
-            }
-        }
-    }
-    createMapMarkers(map_world);
+//                    // Map in odom frame
+//                    lm_world = tf::Vector3(landmark_state_srv.response.pose.position.x,
+//                                           landmark_state_srv.response.pose.position.y,
+//                                           landmark_state_srv.response.pose.position.z);
+//                    lm_odom = transf_odom_world_ * lm_world;
+//                    aux_vec(1) = lm_odom.x();
+//                    aux_vec(2) = lm_odom.y();
+//                    aux_vec(3) = lm_odom.z();
+//                    map_odom_.push_back(aux_vec);
+//                    id++;
+//                }
+//            }
+//        }
+//    }
+//    createMapMarkers(map_world);
 
     // Create 1D KF to filter input sensors
 //    dvl_x_kf = new OneDKF(0,0.1,0,0.001); // Adjust noise params for each filter
@@ -458,20 +458,19 @@ void EKFLocalization::predictMeasurement(const boost::numeric::ublas::vector<dou
     tf::Vector3 landmark_j_odom = tf::Vector3(landmark_j(1),
                                               landmark_j(2),
                                               landmark_j(3));
-    tf::Vector3 z_hat_sss;
-    z_hat_sss = transf_odom_base.inverse() * landmark_j_odom;
 
-    vector<double> z_i_hat_base = vector<double>(3);
-    z_i_hat_base(0) = z_hat_sss.getX();
-    z_i_hat_base(1) = z_hat_sss.getY();
-    z_i_hat_base(2) = z_hat_sss.getZ();
+    tf::Vector3 z_hat_base = transf_odom_base.inverse() * landmark_j_odom;
+    vector<double> z_k_hat_base = vector<double>(3);
+    z_k_hat_base(0) = z_hat_base.getX();
+    z_k_hat_base(1) = z_hat_base.getY();
+    z_k_hat_base(2) = z_hat_base.getZ();
 
     // Compute ML of observation z_i with M_j
     CorrespondenceClass *corresp_j_ptr;
     corresp_j_ptr = new CorrespondenceClass(landmark_j(0));
     corresp_j_ptr->computeH(mu_hat_, landmark_j_odom);
     corresp_j_ptr->computeS(Sigma_hat_, Q_);
-    corresp_j_ptr->computeNu(z_i_hat_base, z_i);
+    corresp_j_ptr->computeNu(z_k_hat_base, z_i);
     corresp_j_ptr->computeLikelihood();
 
     // Outlier rejection
@@ -485,30 +484,47 @@ void EKFLocalization::predictMeasurement(const boost::numeric::ublas::vector<dou
 }
 
 void EKFLocalization::dataAssociation(){
-    boost::numeric::ublas::vector<double> z_i(3);
+    boost::numeric::ublas::vector<double> z_i_temp(3);
     std::vector<boost::numeric::ublas::vector<double>> z_t;
 
     double epsilon = 20;
+
     // If observations available
     if(!measurements_t_.empty()){
-//        ROS_INFO("-----Measurements received-----");
-        for(auto observ: measurements_t_){  //TODO: it should be only one z_t per measurement update
-            // Compensate for the volume of the stones*****
-            for(auto lm_pose: observ->poses){
-                z_i(0) = lm_pose.position.x;
-                z_i(1) = lm_pose.position.y - 1/std::sqrt(2);
-                z_i(2) = lm_pose.position.z - 1/std::sqrt(2);
-                z_t.push_back(z_i);
-            }
+        // Fetch latest measurement
+        auto observ = measurements_t_.back();
+        measurements_t_.pop_back();
+        // Extract all the landmarks
+        for(auto lm_pose: observ->poses){
+            z_i_temp(0) = lm_pose.position.x;
+            z_i_temp(1) = lm_pose.position.y - 1/std::sqrt(2); // Compensate for the volume of the stones*****
+            z_i_temp(2) = lm_pose.position.z - 1/std::sqrt(2);
+            z_t.push_back(z_i_temp);
         }
-        measurements_t_.pop_front();
         if(!measurements_t_.empty()){
             ROS_WARN("Cache with measurements is not empty");
         }
+
         // Main ML loop
         std::vector<CorrespondenceClass*> ml_i_list;
+        boost::numeric::ublas::vector<double> new_lm = boost::numeric::ublas::vector<double> (3);
+        tf::Vector3 new_lm_aux;
+
+        // Compute transform odom --> base from current state estimate
+        tf::Quaternion q_auv_t = tf::createQuaternionFromRPY(mu_hat_(3), mu_hat_(4), mu_hat_(5));
+        q_auv_t.normalize();
+        tf::Transform transf_odom_base = tf::Transform(q_auv_t, tf::Vector3(mu_hat_(0), mu_hat_(1), mu_hat_(2)));
+        tf::Transform transf_base_odom = transf_odom_base.inverse();
+
         // For each observation z_i at time t
         for(auto z_i: z_t){
+            // Back-project new possible landmark (in odom frame)
+            new_lm_aux = transf_base_odom * tf::Vector3(z_i(0), z_i(1),z_i(2));
+            new_lm(0) = new_lm_aux.getX();
+            new_lm(1) = new_lm_aux.getY();
+            new_lm(2) = new_lm_aux.getZ();
+            map_odom_.push_back(new_lm);
+
             // For each possible landmark j in M
             for(auto landmark_j: map_odom_){
                 // Narrow down the landmarks to be checked
