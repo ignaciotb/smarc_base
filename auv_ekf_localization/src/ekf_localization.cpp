@@ -92,9 +92,8 @@ void EKFLocalization::init(std::vector<double> sigma_diag, std::vector<double> r
     double size_state = r_diag.size();
     double size_meas = q_diag.size();
     mu_ = boost::numeric::ublas::zero_vector<double>(size_state);
-//    mu_(1) = 2;
-//    mu_(2) = 3;
     mu_pred_ = mu_;
+    lm_num_ = map_odom_.size(); // Initial num of landmarks in map
 
     Sigma_ = boost::numeric::ublas::identity_matrix<double>(size_state);
     for(unsigned int i=0; i<size_state; i++){
@@ -157,42 +156,42 @@ void EKFLocalization::init(std::vector<double> sigma_diag, std::vector<double> r
         ROS_INFO_NAMED(node_name_,"Waiting for the gazebo model states service to come up");
     }
 
-//    // Build map for localization from Gazebo services and transform to odom frame coordinates
-//    gazebo_msgs::GetWorldProperties world_prop_srv;
-//    gazebo_msgs::GetModelState landmark_state_srv;
-//    tf::Vector3 lm_world;
-//    tf::Vector3 lm_odom;
-//    std::vector<boost::numeric::ublas::vector<double>> map_world;
-//    if(gazebo_client_.call(world_prop_srv)){
-//        int id = 0;
-//        boost::numeric::ublas::vector<double> aux_vec(4);
-//        for(auto landmark_name: world_prop_srv.response.model_names){
-//            if(landmark_name != "lolo_auv" && landmark_name != "ned" && landmark_name != "ocean"){
-//                landmark_state_srv.request.model_name = landmark_name;
-//                if(landmarks_client_.call(landmark_state_srv)){
-//                    aux_vec(0) = id;
+    // Build map for localization from Gazebo services and transform to odom frame coordinates
+    gazebo_msgs::GetWorldProperties world_prop_srv;
+    gazebo_msgs::GetModelState landmark_state_srv;
+    tf::Vector3 lm_world;
+    tf::Vector3 lm_odom;
+    std::vector<boost::numeric::ublas::vector<double>> map_world;
+    if(gazebo_client_.call(world_prop_srv)){
+        int id = 0;
+        boost::numeric::ublas::vector<double> aux_vec(4);
+        for(auto landmark_name: world_prop_srv.response.model_names){
+            if(landmark_name != "lolo_auv" && landmark_name != "ned" && landmark_name != "ocean"){
+                landmark_state_srv.request.model_name = landmark_name;
+                if(landmarks_client_.call(landmark_state_srv)){
+                    aux_vec(0) = id;
 
-//                    // Store map in world frame
+                    // Store map in world frame
 //                    aux_vec(1) = landmark_state_srv.response.pose.position.x;
 //                    aux_vec(2) = landmark_state_srv.response.pose.position.y;
 //                    aux_vec(3) = landmark_state_srv.response.pose.position.z;
 //                    map_world.push_back(aux_vec);
 
-//                    // Map in odom frame
-//                    lm_world = tf::Vector3(landmark_state_srv.response.pose.position.x,
-//                                           landmark_state_srv.response.pose.position.y,
-//                                           landmark_state_srv.response.pose.position.z);
-//                    lm_odom = transf_odom_world_ * lm_world;
-//                    aux_vec(1) = lm_odom.x();
-//                    aux_vec(2) = lm_odom.y();
-//                    aux_vec(3) = lm_odom.z();
-//                    map_odom_.push_back(aux_vec);
-//                    id++;
-//                }
-//            }
-//        }
-//    }
-//    createMapMarkers(map_world);
+                    // Map in odom frame
+                    lm_world = tf::Vector3(landmark_state_srv.response.pose.position.x,
+                                           landmark_state_srv.response.pose.position.y,
+                                           landmark_state_srv.response.pose.position.z);
+                    lm_odom = transf_odom_world_ * lm_world;
+                    aux_vec(1) = lm_odom.x();
+                    aux_vec(2) = lm_odom.y();
+                    aux_vec(3) = lm_odom.z();
+                    map_world.push_back(aux_vec);
+                    id++;
+                }
+            }
+        }
+    }
+    updateMapMarkers(map_world, 0.0);
 
     // Create 1D KF to filter input sensors
 //    dvl_x_kf = new OneDKF(0,0.1,0,0.001); // Adjust noise params for each filter
@@ -238,12 +237,12 @@ void EKFLocalization::gtCB(const nav_msgs::OdometryPtr &pose_msg){
     }
 }
 
-void EKFLocalization::createMapMarkers(std::vector<boost::numeric::ublas::vector<double>> map_world){
+void EKFLocalization::updateMapMarkers(std::vector<boost::numeric::ublas::vector<double> > map, double color){
 
     unsigned int i = 0;
-    for (auto landmark: map_world){
+    for (auto landmark: map){
         visualization_msgs::Marker markers;
-        markers.header.frame_id = "world";
+        markers.header.frame_id = "odom";
         markers.header.stamp = ros::Time();
         markers.ns = "map_array";
         markers.id = i;
@@ -260,7 +259,7 @@ void EKFLocalization::createMapMarkers(std::vector<boost::numeric::ublas::vector
         markers.scale.y = 1;
         markers.scale.z = 1;
         markers.color.a = 1.0;
-        markers.color.r = 0.0;
+        markers.color.r = color;
         markers.color.g = 1.0;
         markers.color.b = 0.0;
 

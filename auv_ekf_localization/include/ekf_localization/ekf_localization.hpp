@@ -175,7 +175,7 @@ private:
      * Measurement prediction for a given pair measurement-landmark at time t
      */
     void predictMeasurement(const boost::numeric::ublas::vector<double> &landmark_j,
-                                 boost::numeric::ublas::vector<double> &z_i,
+                                 boost::numeric::ublas::vector<double> &z_i, unsigned int i,
                                  std::vector<CorrespondenceClass *> &ml_i_list);
 
     /**
@@ -196,7 +196,7 @@ private:
      * @brief createMapMarkers
      * Publishes the map as an array of markers for visualization in RVIZ
      */
-    void createMapMarkers(std::vector<boost::numeric::ublas::vector<double> > map_world);
+    void updateMapMarkers(std::vector<boost::numeric::ublas::vector<double> > map, double color);
 
     /**
      * @brief EKFLocalization::sendOutput
