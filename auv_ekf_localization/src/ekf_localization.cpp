@@ -423,28 +423,29 @@ void EKFLocalization::predictMotion(boost::numeric::ublas::vector<double> &u_t,
     mu_pred_ += u_t;
 
     // Compute Jacobian G_t
-    matrix<double> G_t;
-    matrix<double> I_t = identity_matrix<double>(6, 6 + 3*lm_num_);
+    matrix<double> I_t = identity_matrix<double>(6 + 3*lm_num_, 6 + 3*lm_num_);
     I_t(3,3) = 0;   // G_t is zero here because the motion model uses abs values for RPY
     I_t(4,4) = 0;
     I_t(5,5) = 0;
 
-    matrix<double> aux = prod(g_t, F_x);
-    noalias(G_t) = prod(F_x_trans, aux);
-    noalias(G_t) += I_t;
+    matrix<double> G_t;
+    matrix<double> aux_mat = prod(g_t, F_x);
+    G_t = prod(F_x_trans, aux_mat) + I_t;
 
     // Predicted covariance matrix
-    matrix<double> aux_2;
-    noalias(aux_2) = prod(G_t, Sigma_);
-    noalias(Sigma_hat_) = prod(aux_2, trans(G_t));
-    matrix<double> aux_3;
-    noalias(aux_3) = prod(R_, F_x);
-    noalias(Sigma_hat_) += prod(F_x_trans, aux_3);
+    matrix<double> aux_mat_2;
+    aux_mat_2 = prod(G_t, Sigma_);
+    Sigma_hat_ = prod(aux_mat_2, trans(G_t));
+    matrix<double> aux_mat_3;
+    aux_mat_3 = prod(R_, F_x);
+    Sigma_hat_ += prod(F_x_trans, aux_mat_3);
+
 }
 
 void EKFLocalization::predictMeasurement(const boost::numeric::ublas::vector<double> &landmark_j,
-                                      boost::numeric::ublas::vector<double> &z_i,
-                                      std::vector<CorrespondenceClass *> &ml_i_list){
+                                          boost::numeric::ublas::vector<double> &z_i,
+                                          unsigned int i,
+                                          std::vector<CorrespondenceClass *> &corresp_i_list){
 
     using namespace boost::numeric::ublas;
 
@@ -465,17 +466,16 @@ void EKFLocalization::predictMeasurement(const boost::numeric::ublas::vector<dou
     z_k_hat_base(2) = z_hat_base.getZ();
 
     // Compute ML of observation z_i with M_j
-    CorrespondenceClass *corresp_j_ptr;
-    corresp_j_ptr = new CorrespondenceClass(landmark_j(0));
-    corresp_j_ptr->computeH(mu_hat_, landmark_j_odom);
+    CorrespondenceClass *corresp_j_ptr = new CorrespondenceClass(i, landmark_j(0));
+    corresp_j_ptr->computeH(mu_hat_, landmark_j_odom, lm_num_);
     corresp_j_ptr->computeS(Sigma_hat_, Q_);
     corresp_j_ptr->computeNu(z_k_hat_base, z_i);
     corresp_j_ptr->computeLikelihood();
 
     // Outlier rejection
-//    std::cout << "mahalanobis dist: " << corresp_j_ptr->d_m_ << " vs lambda: " << lambda_M_ << std::endl;
     if(corresp_j_ptr->d_m_ < lambda_M_){
-        ml_i_list.push_back(corresp_j_ptr);
+        ROS_DEBUG_NAMED(node_name_, "Correspondance candidate added");
+        corresp_i_list.push_back(corresp_j_ptr);
     }
     else{
         ROS_DEBUG_NAMED(node_name_, "Outlier rejected");
@@ -487,6 +487,7 @@ void EKFLocalization::dataAssociation(){
     std::vector<boost::numeric::ublas::vector<double>> z_t;
 
     double epsilon = 20;
+    double alpha = 1;
 
     // If observations available
     if(!measurements_t_.empty()){
@@ -505,8 +506,8 @@ void EKFLocalization::dataAssociation(){
         }
 
         // Main ML loop
-        std::vector<CorrespondenceClass*> ml_i_list;
-        boost::numeric::ublas::vector<double> new_lm = boost::numeric::ublas::vector<double> (3);
+        std::vector<CorrespondenceClass*> corresp_i_list;
+        boost::numeric::ublas::vector<double> new_lm = boost::numeric::ublas::vector<double>(4);
         tf::Vector3 new_lm_aux;
 
         // Compute transform odom --> base from current state estimate
@@ -516,29 +517,52 @@ void EKFLocalization::dataAssociation(){
         tf::Transform transf_base_odom = transf_odom_base.inverse();
 
         // For each observation z_i at time t
-        for(auto z_i: z_t){
+        for(unsigned int i = 0; i<z_t.size(); i++){
             // Back-project new possible landmark (in odom frame)
-            new_lm_aux = transf_base_odom * tf::Vector3(z_i(0), z_i(1),z_i(2));
-            new_lm(0) = new_lm_aux.getX();
-            new_lm(1) = new_lm_aux.getY();
-            new_lm(2) = new_lm_aux.getZ();
+            new_lm_aux = transf_base_odom * tf::Vector3(z_t.at(i)(0), z_t.at(i)(1),z_t.at(i)(2));
+            new_lm(0) = i;
+            new_lm(1) = new_lm_aux.getX();
+            new_lm(2) = new_lm_aux.getY();
+            new_lm(3) = new_lm_aux.getZ();
             map_odom_.push_back(new_lm);
+            ROS_INFO_NAMED(node_name_, "New possible landmark added");
 
             // For each possible landmark j in M
             for(auto landmark_j: map_odom_){
-                // Narrow down the landmarks to be checked
-//                if(epsilon > std::abs((landmark_j(1) - mu_hat_(0)) * std::tan(M_PI/2.0 + mu_hat_(5)) / (landmark_j(2) - mu_hat_(1)))){
-                    predictMeasurement(landmark_j, z_i, ml_i_list);
-//                }
+                // TODO: Narrow down the landmarks to be checked
+                std::cout << "z_i " << z_t.at(i) << std::endl;
+                std::cout << "landmark j: " << landmark_j << std::endl;
+                predictMeasurement(landmark_j, z_t.at(i), i, corresp_i_list);
             }
-            // Select the association with the maximum likelihood
-            if(!ml_i_list.empty()){
-                if(ml_i_list.size() > 1){
-                    std::sort(ml_i_list.begin(), ml_i_list.end(), sortLandmarksML);
+
+            // Select the association with the minimum Mahalanobis distance
+            if(!corresp_i_list.empty()){
+                // Set Mahalanobis distance for new possible landmark
+                corresp_i_list.back()->d_m_ = alpha;
+                if(corresp_i_list.size() > 1){
+                    std::sort(corresp_i_list.begin(), corresp_i_list.end(), sortLandmarksML);
+                }
+                // Update landmarks in the map
+                if(lm_num_ >= corresp_i_list.back()->i_j_.first){
+                    map_odom_.pop_back();
+                }
+                else{
+                    // +1 new landmark
+                    lm_num_ = corresp_i_list.back()->i_j_.first;
+                    // Increase mu_hat_
+                    mu_hat_.resize(mu_hat_.size()+3, true);
+                    std::copy(mu_hat_.begin()+mu_hat_.size()-3, mu_hat_.end(), map_odom_.back().begin()); // TODO: check output
+                    // Increase Sigma_hat_
+                    Sigma_hat_.resize(Sigma_hat_.size1()+3, Sigma_hat_.size2()+3, true);
+                    boost::numeric::ublas::subrange(Sigma_hat_, Sigma_hat_.size1()-3, Sigma_hat_.size1(), 0, Sigma_hat_.size1()) = boost::numeric::ublas::zero_matrix<double>(3, Sigma_hat_.size1());
+                    boost::numeric::ublas::subrange(Sigma_hat_, 0, Sigma_hat_.size1(), Sigma_hat_.size1()-3, Sigma_hat_.size1()) = boost::numeric::ublas::zero_matrix<double>(Sigma_hat_.size1(), 3);
+                    Sigma_hat_(Sigma_hat_.size1()-2, Sigma_hat_.size1()-2) = 1000;  // TODO: initialize with uncertainty on the measurement
+                    Sigma_hat_(Sigma_hat_.size1()-1, Sigma_hat_.size1()-1) = 1000;
+                    Sigma_hat_(Sigma_hat_.size1(), Sigma_hat_.size1()) = 1000;
                 }
                 // Sequential update                
-                sequentialUpdate(ml_i_list.front());
-                ml_i_list.clear();
+                sequentialUpdate(corresp_i_list.back());
+                corresp_i_list.clear();
             }
         }
     }
@@ -549,19 +573,21 @@ void EKFLocalization::sequentialUpdate(CorrespondenceClass* c_i_j){
     using namespace boost::numeric::ublas;
     matrix<double> K_t_i;
     matrix<double> H_trans;
-    identity_matrix<double> I(Sigma_hat_.size1(), Sigma_hat_.size2());
+    identity_matrix<double> I(Sigma_hat_.size1());
     matrix<double> aux_mat;
 
     // Compute Kalman gain
-    H_trans = trans(c_i_j->H_);
+    H_trans = trans(c_i_j->H_t_);
     K_t_i = prod(Sigma_hat_, H_trans);
     K_t_i = prod(K_t_i, c_i_j->S_inverted_);
+
     // Update mu_hat and sigma_hat
     mu_hat_ += prod(K_t_i, c_i_j->nu_);
     mu_hat_(3) = angleLimit(mu_hat_(3));
     mu_hat_(4) = angleLimit(mu_hat_(4));
     mu_hat_(5) = angleLimit(mu_hat_(5));
-    aux_mat = (I  - prod(K_t_i, c_i_j->H_));
+
+    aux_mat = (I  - prod(K_t_i, c_i_j->H_t_));
     Sigma_hat_ = prod(aux_mat, Sigma_hat_);
 }
 
@@ -578,7 +604,7 @@ void EKFLocalization::ekfLocalize(const ros::TimerEvent& e){
     if(dvl_readings_.size() >= size_dvl_q_ && imu_readings_.size() >= size_imu_q_ && !gt_readings_.empty()){
         // Init filter with initial, true pose (from GPS?)
         if(!init_filter_){
-            ROS_INFO_NAMED(node_name_, "Starting localization node");
+            ROS_INFO_NAMED(node_name_, "Starting navigation node");
 
             // Compute initial pose
             gt_msg = gt_readings_.back();
@@ -621,26 +647,30 @@ void EKFLocalization::ekfLocalize(const ros::TimerEvent& e){
 
             // Prediction step
             predictMotion(u_t, g_t);
+            g_t.clear();    // TODO: use pointers whose content can be erased?
 
             // Data association and sequential update
             dataAssociation();
 
             // Update step
+            if (mu_.size()!= mu_hat_.size()){
+                int n_t = mu_hat_.size() - mu_.size();
+                mu_.resize(mu_.size() + n_t, true);
+                Sigma_.resize(Sigma_.size1() + n_t, Sigma_.size1() + n_t, true);
+            }
             mu_ = mu_hat_;
-            mu_(3) = angleLimit(mu_(3));
-            mu_(4) = angleLimit(mu_(4));
-            mu_(5) = angleLimit(mu_(5));
             Sigma_ = Sigma_hat_;
 
             // Publish and broadcast
             this->sendOutput(dvl_msg->header.stamp);
+            this->updateMapMarkers(map_odom_, 1.0);
             vis_pub_.publish(markers_);
         }
     }
     else{
         gt_msg = gt_readings_.back();
         this->sendOutput(gt_msg->header.stamp);
-        ROS_INFO("No sensory update, broadcasting latest known pose");
+        ROS_WARN("No sensory update, broadcasting latest known pose");
     }
 
 }
