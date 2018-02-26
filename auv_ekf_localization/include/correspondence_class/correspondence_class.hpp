@@ -48,14 +48,14 @@ public:
 
     double psi_;
     double d_m_;
-    boost::numeric::ublas::matrix<double> H_;
+    boost::numeric::ublas::matrix<double> H_t_;
     boost::numeric::ublas::matrix<double> S_;
     boost::numeric::ublas::matrix<double> S_inverted_;
     boost::numeric::ublas::vector<int> landmark_pos_;
     boost::numeric::ublas::vector<double> nu_;
-    int landmark_id_;
+    std::pair<int, double> i_j_;
 
-    CorrespondenceClass(const double &lm_id);
+    CorrespondenceClass(const int &z_id, const double &lm_id);
     /**
      * @brief computeH
      * @param mu_hat
@@ -63,7 +63,7 @@ public:
      * Computes the jacobian of the measurment model
      */
     void computeH(const boost::numeric::ublas::vector<double> &mu_hat,
-                  const tf::Vector3 lm_odom);
+                  const tf::Vector3 lm_odom, double N_t);
     /**
      * @brief computeS
      * @param sigma
