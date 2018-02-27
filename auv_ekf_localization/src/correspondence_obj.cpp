@@ -6,7 +6,7 @@ CorrespondenceClass::CorrespondenceClass(const int &z_id, const double &lm_id){
 }
 
 void CorrespondenceClass::computeH(const boost::numeric::ublas::vector<double> &mu_hat,
-                          const tf::Vector3 lm_odom, double N_t){
+                                   const tf::Vector3 lm_odom, double N_t){
 
     using namespace std;
     boost::numeric::ublas::matrix<double> h_t = boost::numeric::ublas::identity_matrix<double>(3,9);
@@ -63,8 +63,6 @@ void CorrespondenceClass::computeH(const boost::numeric::ublas::vector<double> &
     h_t(2,7) = cos(mu_hat(3))*sin(mu_hat(4))*sin(mu_hat(5)) - cos(mu_hat(5))*sin(mu_hat(3));
     h_t(2,8) = cos(mu_hat(4))*cos(mu_hat(3));
 
-    ROS_INFO("h_t Done!");
-
     // Construct F_x projection matrix
     boost::numeric::ublas::matrix<double> F_x_k = boost::numeric::ublas::zero_matrix<double>(9, 6 + 3*N_t);
     boost::numeric::ublas::subrange(F_x_k, 0, 6, 0, 6) = boost::numeric::ublas::identity_matrix<double>(6);
@@ -75,11 +73,9 @@ void CorrespondenceClass::computeH(const boost::numeric::ublas::vector<double> &
 
 void CorrespondenceClass::computeS(const boost::numeric::ublas::matrix<double> &sigma,
                           const boost::numeric::ublas::matrix<double> &Q){
-    // Intermidiate steps
+
     boost::numeric::ublas::matrix<double> mat = boost::numeric::ublas::prod(H_t_, sigma);
-    boost::numeric::ublas::matrix<double> mat1 = boost::numeric::ublas::trans(H_t_);
-    // Computation of S
-    S_ = boost::numeric::ublas::prod(mat, mat1);
+    S_ = boost::numeric::ublas::prod(mat, boost::numeric::ublas::trans(H_t_));
     S_ += Q;
 }
 

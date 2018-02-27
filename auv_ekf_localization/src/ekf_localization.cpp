@@ -15,9 +15,9 @@ unsigned int factorial(unsigned int n)
     return ret;
 }
 
-bool sortLandmarksML(CorrespondenceClass *ml_1, CorrespondenceClass *ml_2){
+bool sortLandmarksMD(CorrespondenceClass *ml_1, CorrespondenceClass *ml_2){
 
-    return (ml_1->psi_ > ml_2->psi_)? true: false;
+    return (ml_1->d_m_ > ml_2->d_m_)? true: false;
 }
 
 // END HELPER FUNCTIONS
@@ -266,7 +266,6 @@ void EKFLocalization::updateMapMarkers(std::vector<boost::numeric::ublas::vector
         markers_.markers.push_back(markers);
         i += 1;
     }
-    std::cout << "number of landmars: " << i << std::endl;
 }
 
 bool EKFLocalization::sendOutput(ros::Time t){
@@ -467,18 +466,18 @@ void EKFLocalization::predictMeasurement(const boost::numeric::ublas::vector<dou
 
     // Compute ML of observation z_i with M_j
     CorrespondenceClass *corresp_j_ptr = new CorrespondenceClass(i, landmark_j(0));
-    corresp_j_ptr->computeH(mu_hat_, landmark_j_odom, lm_num_);
+    corresp_j_ptr->computeH(mu_hat_, landmark_j_odom, lm_num_ + 1);
     corresp_j_ptr->computeS(Sigma_hat_, Q_);
     corresp_j_ptr->computeNu(z_k_hat_base, z_i);
     corresp_j_ptr->computeLikelihood();
 
     // Outlier rejection
     if(corresp_j_ptr->d_m_ < lambda_M_){
-        ROS_DEBUG_NAMED(node_name_, "Correspondance candidate added");
+        ROS_INFO_NAMED(node_name_, "Correspondance candidate added");
         corresp_i_list.push_back(corresp_j_ptr);
     }
     else{
-        ROS_DEBUG_NAMED(node_name_, "Outlier rejected");
+        ROS_INFO_NAMED(node_name_, "Outlier rejected");
     }
 }
 
@@ -487,7 +486,7 @@ void EKFLocalization::dataAssociation(){
     std::vector<boost::numeric::ublas::vector<double>> z_t;
 
     double epsilon = 20;
-    double alpha = 1;
+    double alpha = 1;   // TODO: find suitable value!!
 
     // If observations available
     if(!measurements_t_.empty()){
@@ -505,7 +504,7 @@ void EKFLocalization::dataAssociation(){
             ROS_WARN("Cache with measurements is not empty");
         }
 
-        // Main ML loop
+        // Main loop
         std::vector<CorrespondenceClass*> corresp_i_list;
         boost::numeric::ublas::vector<double> new_lm = boost::numeric::ublas::vector<double>(4);
         tf::Vector3 new_lm_aux;
@@ -516,11 +515,26 @@ void EKFLocalization::dataAssociation(){
         tf::Transform transf_odom_base = tf::Transform(q_auv_t, tf::Vector3(mu_hat_(0), mu_hat_(1), mu_hat_(2)));
         tf::Transform transf_base_odom = transf_odom_base.inverse();
 
+        int aux_lm_num = lm_num_;
+        bool augment_map = true;
         // For each observation z_i at time t
         for(unsigned int i = 0; i<z_t.size(); i++){
+            ROS_INFO("Starting!");
+            if(augment_map == true){
+                // Increase Sigma_hat_
+                Sigma_hat_.resize(Sigma_hat_.size1()+3, Sigma_hat_.size2()+3, true);
+                boost::numeric::ublas::subrange(Sigma_hat_, Sigma_hat_.size1()-3, Sigma_hat_.size1(), 0, Sigma_hat_.size1()) = boost::numeric::ublas::zero_matrix<double>(3, Sigma_hat_.size1());
+                boost::numeric::ublas::subrange(Sigma_hat_, 0, Sigma_hat_.size1(), Sigma_hat_.size1()-3, Sigma_hat_.size1()) = boost::numeric::ublas::zero_matrix<double>(Sigma_hat_.size1(), 3);
+                Sigma_hat_(Sigma_hat_.size1()-2, Sigma_hat_.size1()-2) = 1000;  // TODO: initialize with uncertainty on the measurement
+                Sigma_hat_(Sigma_hat_.size1()-1, Sigma_hat_.size1()-1) = 1000;
+                Sigma_hat_(Sigma_hat_.size1(), Sigma_hat_.size1()) = 1000;
+                augment_map = false;
+                ROS_INFO("sigma_hat augmented!");
+            }
             // Back-project new possible landmark (in odom frame)
+            aux_lm_num = lm_num_ + 1;
             new_lm_aux = transf_base_odom * tf::Vector3(z_t.at(i)(0), z_t.at(i)(1),z_t.at(i)(2));
-            new_lm(0) = i;
+            new_lm(0) = aux_lm_num;
             new_lm(1) = new_lm_aux.getX();
             new_lm(2) = new_lm_aux.getY();
             new_lm(3) = new_lm_aux.getZ();
@@ -540,30 +554,30 @@ void EKFLocalization::dataAssociation(){
                 // Set Mahalanobis distance for new possible landmark
                 corresp_i_list.back()->d_m_ = alpha;
                 if(corresp_i_list.size() > 1){
-                    std::sort(corresp_i_list.begin(), corresp_i_list.end(), sortLandmarksML);
+                    std::sort(corresp_i_list.begin(), corresp_i_list.end(), sortLandmarksMD);
                 }
                 // Update landmarks in the map
-                if(lm_num_ >= corresp_i_list.back()->i_j_.first){
+                if(lm_num_ >= corresp_i_list.back()->i_j_.second){
+                    ROS_INFO("No landmark added!");
                     map_odom_.pop_back();
                 }
                 else{
+                    ROS_INFO("Adding landmark!");
                     // +1 new landmark
-                    lm_num_ = corresp_i_list.back()->i_j_.first;
+                    lm_num_ = corresp_i_list.back()->i_j_.second;
                     // Increase mu_hat_
                     mu_hat_.resize(mu_hat_.size()+3, true);
-                    std::copy(mu_hat_.begin()+mu_hat_.size()-3, mu_hat_.end(), map_odom_.back().begin()); // TODO: check output
-                    // Increase Sigma_hat_
-                    Sigma_hat_.resize(Sigma_hat_.size1()+3, Sigma_hat_.size2()+3, true);
-                    boost::numeric::ublas::subrange(Sigma_hat_, Sigma_hat_.size1()-3, Sigma_hat_.size1(), 0, Sigma_hat_.size1()) = boost::numeric::ublas::zero_matrix<double>(3, Sigma_hat_.size1());
-                    boost::numeric::ublas::subrange(Sigma_hat_, 0, Sigma_hat_.size1(), Sigma_hat_.size1()-3, Sigma_hat_.size1()) = boost::numeric::ublas::zero_matrix<double>(Sigma_hat_.size1(), 3);
-                    Sigma_hat_(Sigma_hat_.size1()-2, Sigma_hat_.size1()-2) = 1000;  // TODO: initialize with uncertainty on the measurement
-                    Sigma_hat_(Sigma_hat_.size1()-1, Sigma_hat_.size1()-1) = 1000;
-                    Sigma_hat_(Sigma_hat_.size1(), Sigma_hat_.size1()) = 1000;
+                    std::copy(mu_hat_.begin()+mu_hat_.size()-3, mu_hat_.end(), map_odom_.back().begin()+1); // TODO: check output
+                    ROS_INFO("mu_hat augmented!");
+                    augment_map = true;
                 }
                 // Sequential update                
                 sequentialUpdate(corresp_i_list.back());
                 corresp_i_list.clear();
             }
+        }
+        while(mu_hat_.size() < Sigma_hat_.size1()){
+            Sigma_hat_.resize(Sigma_hat_.size1()-3, Sigma_hat_.size2()-3, true);
         }
     }
 }
